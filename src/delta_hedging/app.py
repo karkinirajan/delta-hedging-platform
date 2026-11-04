@@ -10,6 +10,7 @@ import logging
 from dataclasses import dataclass
 
 from flask import Flask, jsonify
+from werkzeug.middleware.proxy_fix import ProxyFix
 
 from .config import Settings
 from .ig import IGClient, IGError
@@ -41,6 +42,9 @@ def create_app(settings: Settings | None = None, service: HedgingService | None 
     app = Flask(__name__)
     app.config.update(MAX_CONTENT_LENGTH=16 * 1024)  # a request is a few fields
     app.json.sort_keys = False
+    if settings.trusted_proxy_hops:
+        # the client address (used by the failed-token throttle) is the one the nearest proxies report
+        app.wsgi_app = ProxyFix(app.wsgi_app, x_for=settings.trusted_proxy_hops)  # type: ignore[method-assign]
     app.extensions["delta_hedging"] = Services(settings=settings, hedging=service or build_service(settings))
 
     from .api import bp

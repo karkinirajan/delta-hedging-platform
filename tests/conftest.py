@@ -5,7 +5,7 @@ import pytest
 from delta_hedging.config import Settings
 from delta_hedging.ig import IGClient
 
-from .fake_ig import API_KEY, BASE, CFD_ACCOUNT, OPTIONS_ACCOUNT, PASSWORD, UNDERLYING, USERNAME, FakeIG
+from .fake_ig import API_KEY, CFD_ACCOUNT, OPTIONS_ACCOUNT, PASSWORD, UNDERLYING, USERNAME, FakeIG
 
 TOKEN = "a-demo-api-token-of-24-or-more-characters"
 ENV = {
@@ -16,7 +16,6 @@ ENV = {
     "IG_CFD_ACCOUNT": CFD_ACCOUNT,
     "IG_UNDERLYING_EPIC": UNDERLYING,
     "API_TOKEN": TOKEN,
-    "IG_BASE_URL": BASE,
     "COOLDOWN_SECONDS": "0",
 }
 OPTIONAL = [
@@ -33,6 +32,8 @@ OPTIONAL = [
     "PLAN_TOLERANCE",
     "MARKET_DATA_TTL",
     "REQUEST_TIMEOUT",
+    "IG_BASE_URL",
+    "TRUSTED_PROXY_HOPS",
 ]
 
 

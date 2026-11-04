@@ -66,7 +66,7 @@ All checked against the code before they were written down here.
 | `main.py` | `cli.py` (`run` on 127.0.0.1 without debug; `greeks`), `__main__.py` |
 | `requirements.txt` | `pyproject.toml` + `uv.lock` (Python 3.13; 4 direct dependencies) |
 | `README.md`, `.gitignore` | rewritten (the 264-line template `.gitignore` is now a short one) |
-| (new) | `.env.example`, `Dockerfile`, `.dockerignore`, `.github/workflows/ci.yml`, `VERSIONS.md`, `docs/` (4 chapters), 490 test cases (191 test functions) |
+| (new) | `.env.example`, `Dockerfile`, `.dockerignore`, `.github/workflows/ci.yml`, `VERSIONS.md`, `docs/` (4 chapters), 532 test cases |
 
 ### Behaviour that differs from the first version
 
@@ -86,13 +86,26 @@ All checked against the code before they were written down here.
 
 | Check | Result |
 |---|---|
-| `pytest -q -W error --cov` | 490 passed, 1 skipped (warnings are errors); 99 % line and branch coverage (825 statements, 11 missed). The skip is a conditional test on a price below what the solver can tell apart |
+| `pytest -q -W error --cov` | 532 passed, 1 skipped (warnings are errors); 99 % line and branch coverage (871 statements, 12 missed). The skip is a conditional test on a price below what the solver can tell apart |
 | `ruff check`, `ruff format --check`, `uv lock --check` | pass |
-| mutation check | 47 defects put back one at a time; the suite failed for all 47; files restored afterwards. Among them: **every hedge is a BUY**, held hedges ignored, no threshold, no confirm needed, dry run ignored, stale plan accepted, no cooldown, rejection treated as success, order sent on the wrong account, no authentication, no throttle, debug server, live IG accepted, hedging on by default, secrets in `repr`, vega not scaled, put delta without the -1, a price the model cannot give accepted. One pattern failed to match the reformatted line on the first run; it was fixed and re-run |
+| mutation check | 62 defects put back one at a time (47 + 15 for the review follow-up below); the suite failed for all 62; files restored afterwards. Among them: **every hedge is a BUY**, held hedges ignored, no threshold, no confirm needed, dry run ignored, stale plan accepted, no cooldown, rejection treated as success, order sent on the wrong account, no authentication, no throttle, debug server, live IG accepted, hedging on by default, secrets in `repr`, vega not scaled, put delta without the -1, a price the model cannot give accepted. One pattern failed to match the reformatted line on the first run; it was fixed and re-run |
 | `gunicorn` (1 worker, 4 threads) against a fake IG **over HTTP**, in dry-run and live mode | nothing sent to IG at start; 401 without or with a wrong token; analysis from the fake (two positions, implied volatilities, net delta +6.63, plan SELL 6.63); dry-run confirm = 403 with 0 orders at IG; no CORS header on a cross-origin preflight; live: preview sends nothing, the confirmed order reached the CFD account as SELL 6.63 and its confirmation was read; a second order = 429 with `Retry-After`; IG's rate limit = 429; a closed market = a blocked plan; gunicorn logs (151 and 154 lines, non-empty) contain **no key, username, password, token or traceback** |
 | real browser (Chromium via Playwright), light and dark, 1280 / 768 / 375 px | wrong token message; loaded view; the token is in no storage and not in the page; the order button is disabled until the confirmation box is ticked; placing an order shows its reference and a history row (found and fixed: the result message was wiped by the reload that follows an order); keyboard only: Enter submits the token, Space ticks, Tab reaches the button, Enter places the order, and the box is unchecked afterwards; no page-level horizontal overflow (the positions table scrolls inside its box on narrow screens); text contrast 4.53:1 or more in both themes, form-field outline 4.56:1 and 5.47:1 |
 | `docker build --no-cache`, then run with the HTTP fake | image 197 MB, user `app` (uid 10001), the container's HEALTHCHECK turned `healthy`, only `.venv README.md pyproject.toml src uv.lock .python-version` inside (no `.env`, tests or docs), 401 without a token, an order placed and confirmed, a second one refused, **no secret in the container log** |
 | scan of the tree being committed and of all 52 commits | the list above; nothing key-shaped |
+
+## Review follow-up (a second commit)
+
+An automated security review of the first commit raised three points. All three were real weaknesses and are fixed:
+
+| Finding | Fix |
+|---|---|
+| `IG_BASE_URL` let the environment point the login (which sends the account's password) at any host | it is validated: IG's demo gateway over HTTPS, or a loopback address for local fakes; credentials, a query, a fragment, another port or another scheme are refused, and the message never repeats the value |
+| the failed-token throttle refused even a correct token, and behind a proxy every client has the proxy's address: one client's failures could lock the operator out; the table of addresses was unbounded | a correct token is **always** let through; failures only change the answer from 401 to 429; the table and each list are bounded; new `TRUSTED_PROXY_HOPS` (default 0) believes `X-Forwarded-For` for exactly that many proxies, so with 0 a client cannot choose its address. The count is a signal, not the protection: the length of the token is |
+| if reading IG's confirmation failed (a rate limit, a timeout) after the order was sent, the error left **no cooldown and no history entry**, inviting a second order | the failure ends as `unconfirmed` (with the deal reference to check on IG), the order is in the history and the cooldown runs |
+
+42 new test cases (base URLs, proxy hops, the throttle, three kinds of unreadable confirmation) and 15 more mutants, all
+caught. The new refusals were also checked in the real CLI and under gunicorn.
 
 ## Not verified
 

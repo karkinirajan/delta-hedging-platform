@@ -57,7 +57,7 @@ To place the order, send exactly what the preview showed:
 
 | Status | When |
 |---|---|
-| 200, `executed: true` | the order was sent; `outcome` is `accepted`, `rejected` (with `reason`) or `unconfirmed` |
+| 200, `executed: true` | the order was sent; `outcome` is `accepted`, `rejected` (with `reason`) or `unconfirmed` (IG had no confirmation, or it could not be read) |
 | 200, `executed: false` | nothing to hedge now (plan `none` or `blocked`), or a preview |
 | 400 | the body is not a JSON object |
 | 400 | confirm is true but `expected_direction` / `expected_size` are missing or invalid |
@@ -67,7 +67,7 @@ To place the order, send exactly what the preview showed:
 | 409 | another hedge is being placed at this moment |
 | 413 | the request is over 16 KiB |
 | 422 | IG refused the order outright |
-| 429 | too many failed tokens, the cooldown is running, or IG's allowance is used up; `Retry-After` is set |
+| 429 | too many failed tokens from this address (a request with a correct token is never refused for that), the cooldown is running, or IG's allowance is used up; `Retry-After` is set |
 | 502 | IG failed or refused the login |
 | 500 | an unexpected error; the response says only `Internal error.` and the stack goes to the log |
 

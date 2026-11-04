@@ -40,7 +40,7 @@ The documentation is a short book, in reading order:
   size that were previewed; if the book moved in between, the answer is a 409 with the new plan.
 * **The order is checked.** IG answers an order with a reference only; the confirmation is read, and ACCEPTED or
   REJECTED is what is reported and recorded.
-* A cooldown between orders, a throttle on failed token checks, no CORS, a strict Content-Security-Policy, tokens and
+* A cooldown between orders, a counter on failed token checks (a correct token is never refused), no CORS, a strict Content-Security-Policy, tokens and
   passwords never in logs, URLs, pages or error messages.
 * One IG session per account (options, CFD): no request ever runs on the wrong account.
 
@@ -97,8 +97,9 @@ start with a message naming the variable. [`.env.example`](.env.example) lists e
 | `RISK_FREE_RATE` | `0.05` | the model's rate |
 | `DEFAULT_VOLATILITY`, `MIN_VOLATILITY`, `MAX_VOLATILITY` | `0.2`, `0.001`, `2.0` | used, and labelled, when no implied volatility is found |
 | `MARKET_DATA_TTL`, `REQUEST_TIMEOUT` | `5`, `30` | seconds an answer of IG is kept; timeout of a request to IG |
+| `TRUSTED_PROXY_HOPS` | `0` | reverse proxies in front of the app whose `X-Forwarded-For` is believed (0 to 5); see [docs/04](docs/04-safety-model.md) |
 | `IG_ENVIRONMENT` | `demo` | only `demo` is accepted |
-| `IG_BASE_URL` | IG's demo gateway | for local fakes and tests |
+| `IG_BASE_URL` | IG's demo gateway | only for local fakes, and only a loopback address: any other address is refused because the login sends the password to it |
 
 ## The API
 
@@ -152,7 +153,7 @@ uv run ruff check . && uv run ruff format --check .
 
 Tests run against a fake IG; no network and no credentials are needed. Besides the usual tests there is a hygiene
 module that fails if a credential, a database, an IP address or a debug server is committed, and the pricing is
-checked against published values. The suite was also tested by **mutation**: 47 defects (among them the first
+checked against published values. The suite was also tested by **mutation**: 62 defects (among them the first
 version's "every hedge is a BUY") were put back one at a time and the suite failed for each.
 
 ## Docker

@@ -64,18 +64,69 @@ def test_the_dashboard_and_the_health_check_are_public_and_hold_no_data(app, ig)
     assert ig.requests == []  # neither asked IG for anything
 
 
-def test_too_many_failed_attempts_are_throttled_per_client(app, monkeypatch):
+def test_too_many_failed_attempts_are_answered_with_429_and_a_retry_after(app, monkeypatch):
     clock = {"now": 5000.0}
     monkeypatch.setattr(api.time, "monotonic", lambda: clock["now"])
     client = app.test_client()
     for _ in range(api.MAX_FAILURES):
         assert client.get("/api/analysis", headers={"Authorization": "Bearer wrong"}).status_code == 401
-    blocked = client.get("/api/analysis", headers=AUTH)  # even the right token waits
+    blocked = client.get("/api/analysis", headers={"Authorization": "Bearer wrong"})
     assert blocked.status_code == 429 and int(blocked.headers["Retry-After"]) >= 1
-    other = app.test_client().get("/api/analysis", headers=AUTH, environ_overrides={"REMOTE_ADDR": "10.9.9.9"})
-    assert other.status_code == 200  # another address is not affected
+    other = app.test_client().get(
+        "/api/analysis", headers={"Authorization": "Bearer wrong"}, environ_overrides={"REMOTE_ADDR": "10.9.9.9"}
+    )
+    assert other.status_code == 401  # another address has its own count
     clock["now"] += api.FAILURE_WINDOW + 1
+    assert client.get("/api/analysis", headers={"Authorization": "Bearer wrong"}).status_code == 401
+
+
+def test_a_correct_token_is_never_refused_however_many_failures_share_the_address(app):
+    """Behind a proxy every client has the proxy's address: one client's failures must not lock the operator out."""
+    client = app.test_client()
+    for _ in range(api.MAX_FAILURES * 3):
+        client.get("/api/analysis", headers={"Authorization": "Bearer wrong"})
+    assert client.get("/api/analysis", headers={"Authorization": "Bearer wrong"}).status_code == 429
     assert client.get("/api/analysis", headers=AUTH).status_code == 200
+    assert client.post("/api/hedge", headers=AUTH, json={}).status_code == 200
+
+
+def test_the_table_of_failing_addresses_stays_bounded(app, monkeypatch):
+    monkeypatch.setattr(api, "MAX_CLIENTS", 5)
+    client = app.test_client()
+    for n in range(40):
+        client.get(
+            "/api/analysis", headers={"Authorization": "Bearer wrong"}, environ_overrides={"REMOTE_ADDR": f"10.0.0.{n}"}
+        )
+        assert len(api._failures) <= 5
+    assert client.get("/api/analysis", headers=AUTH).status_code == 200  # forgetting addresses never locks anyone out
+
+
+def test_the_failures_of_one_address_are_a_bounded_list(app):
+    client = app.test_client()
+    for _ in range(api.MAX_FAILURES * 5):
+        client.get("/api/analysis", headers={"Authorization": "Bearer wrong"})
+    assert len(api._failures["127.0.0.1"]) == api.MAX_FAILURES
+
+
+def test_without_trusted_proxies_a_forwarded_address_is_ignored(app):
+    """A client must not be able to choose its own address (to dodge the throttle) by sending X-Forwarded-For."""
+    client = app.test_client()
+    for n in range(api.MAX_FAILURES):
+        client.get("/api/analysis", headers={"Authorization": "Bearer wrong", "X-Forwarded-For": f"203.0.113.{n}"})
+    still = client.get("/api/analysis", headers={"Authorization": "Bearer wrong", "X-Forwarded-For": "203.0.113.99"})
+    assert still.status_code == 429
+
+
+def test_behind_one_trusted_proxy_each_forwarded_client_has_its_own_count(env, service_for):
+    settings = Settings.from_env({**env, "TRUSTED_PROXY_HOPS": "1"})
+    app = make_app(settings, service_for(settings))
+    client = app.test_client()
+    one = {"Authorization": "Bearer wrong", "X-Forwarded-For": "203.0.113.5"}
+    for _ in range(api.MAX_FAILURES):
+        client.get("/api/analysis", headers=one)
+    assert client.get("/api/analysis", headers=one).status_code == 429
+    other = {"Authorization": "Bearer wrong", "X-Forwarded-For": "203.0.113.6"}
+    assert client.get("/api/analysis", headers=other).status_code == 401  # a different client behind the same proxy
 
 
 def test_successful_requests_do_not_count_as_failures(app):
@@ -298,3 +349,19 @@ def make_app_real(settings):
 def test_the_json_keeps_the_order_the_code_gives_it(app):
     keys = list(json.loads(get(app).get_data(as_text=True))["analysis"])
     assert keys[:3] == ["generated_at", "spot", "market_status"]
+
+
+def test_behind_one_trusted_proxy_a_client_cannot_choose_its_address_by_prefixing_the_header(env, service_for):
+    """The proxy appends the address it saw; whatever the client put before it is not believed."""
+    settings = Settings.from_env({**env, "TRUSTED_PROXY_HOPS": "1"})
+    app = make_app(settings, service_for(settings))
+    client = app.test_client()
+    for n in range(api.MAX_FAILURES):
+        client.get(
+            "/api/analysis",
+            headers={"Authorization": "Bearer wrong", "X-Forwarded-For": f"198.51.100.{n}, 203.0.113.5"},
+        )
+    again = client.get(
+        "/api/analysis", headers={"Authorization": "Bearer wrong", "X-Forwarded-For": "198.51.100.200, 203.0.113.5"}
+    )
+    assert again.status_code == 429  # counted as 203.0.113.5 every time

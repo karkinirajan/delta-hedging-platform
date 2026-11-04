@@ -4,7 +4,9 @@
 
 Options are read from one IG account and the hedge is placed on another (a CFD account in the underlying). The client
 (`ig.py`) is written against IG's REST documentation at [labs.ig.com](https://labs.ig.com/) and runs against **demo
-only**: the base URL is IG's demo gateway, and `IG_ENVIRONMENT` must be `demo`.
+only**: the base URL is IG's demo gateway, and `IG_ENVIRONMENT` must be `demo`. `IG_BASE_URL` may only point at
+that gateway or at a loopback address (a local fake); any other value stops the start, because the login sends the
+account's password to this address.
 
 ## One session per account
 
@@ -29,7 +31,8 @@ with the state shared by every request.
 * The client makes the deal reference itself (letters, digits, `_`, `-`, up to 30). If the answer to an order is
   lost, the order can still be looked up with that reference instead of being sent again.
 * After the order the confirmation is read, up to three times 0.5 s apart. `ACCEPTED` or `REJECTED` is what is
-  reported. If IG has no confirmation, the outcome is **`unconfirmed`** with the reference, and the cooldown starts: the
+  reported. If IG has no confirmation, **or the confirmation cannot be read** (a rate limit, a timeout), the outcome is
+  **`unconfirmed`** with the reference, the order goes into the history and the cooldown starts: the
   order may have been placed, so check it on the IG platform before hedging again.
 * A rejected order does not start the cooldown, so it can be retried at once.
 

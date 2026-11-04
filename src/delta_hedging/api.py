@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import hmac
 import time
-from collections import defaultdict, deque
+from collections import deque
 
 from flask import Blueprint, current_app, jsonify, render_template, request
 
@@ -19,7 +19,8 @@ from .service import Analysis, HedgeResult, HedgingService, PositionAnalysis
 bp = Blueprint("api", __name__)
 
 MAX_FAILURES, FAILURE_WINDOW = 10, 60.0  # failed token checks per client address, per minute
-_failures: dict[str, deque] = defaultdict(deque)
+MAX_CLIENTS = 10_000  # how many addresses the table of failures keeps
+_failures: dict[str, deque] = {}
 
 
 def _services():
@@ -30,32 +31,51 @@ def hedging() -> HedgingService:
     return _services().hedging
 
 
-def _throttled(client: str) -> float:
+def _throttled(client: str, now: float) -> float:
     """Seconds to wait if `client` has failed the token check too often lately, else 0."""
-    now = time.monotonic()
-    attempts = _failures[client]
+    attempts = _failures.get(client)
+    if attempts is None:
+        return 0.0
     while attempts and now - attempts[0] > FAILURE_WINDOW:
         attempts.popleft()
+    if not attempts:
+        del _failures[client]
+        return 0.0
     return FAILURE_WINDOW - (now - attempts[0]) if len(attempts) >= MAX_FAILURES else 0.0
+
+
+def _record_failure(client: str, now: float) -> None:
+    if client not in _failures and len(_failures) >= MAX_CLIENTS:
+        # forget the addresses whose failures are all old; if that is not enough, forget them all. Forgetting only
+        # loosens the *throttle* (a correct token is never refused), it never locks anybody out
+        for stale in [c for c, a in _failures.items() if not a or now - a[-1] > FAILURE_WINDOW]:
+            del _failures[stale]
+        if len(_failures) >= MAX_CLIENTS:
+            _failures.clear()
+    _failures.setdefault(client, deque(maxlen=MAX_FAILURES)).append(now)
 
 
 @bp.before_app_request
 def require_token():
+    """The token is checked first and a correct one is always let through: the address Flask sees is a proxy's when
+    the app is behind one, so one client's failures must never lock the operator out. What failures earn is a 429
+    instead of a 401, which tells a guesser to slow down and lets the operator see it in the logs; the protection
+    against guessing is the length of the token (24 characters at least, see .env.example)."""
     if not request.path.startswith("/api/"):
         return None
-    client = request.remote_addr or "?"
-    wait = _throttled(client)
+    scheme, _, token = request.headers.get("Authorization", "").partition(" ")
+    expected = _services().settings.api_token
+    if scheme.lower() == "bearer" and expected and hmac.compare_digest(token.strip().encode(), expected.encode()):
+        return None
+    client, now = request.remote_addr or "?", time.monotonic()
+    wait = _throttled(client, now)
+    _record_failure(client, now)
     if wait > 0:
         return (
             jsonify(error="Too many failed attempts. Wait a minute."),
             429,
             {"Retry-After": str(int(wait) + 1)},
         )
-    scheme, _, token = request.headers.get("Authorization", "").partition(" ")
-    expected = _services().settings.api_token
-    if scheme.lower() == "bearer" and expected and hmac.compare_digest(token.strip().encode(), expected.encode()):
-        return None
-    _failures[client].append(time.monotonic())
     return jsonify(error="A valid bearer token is required."), 401, {"WWW-Authenticate": "Bearer"}
 
 

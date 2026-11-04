@@ -125,3 +125,65 @@ def test_overrides_are_read():
     )
     assert (s.rate, s.default_volatility, s.max_hedge_size, s.order_currency) == (0.03, 0.25, 20.0, "USD")
     assert s.hedging_enabled and s.cooldown_seconds == 0.0 and s.base_url == "http://127.0.0.1:9/gateway/deal"
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://demo-api.ig.com/gateway/deal",
+        "https://demo-api.ig.com:443/gateway/deal/",
+        "http://127.0.0.1:9/gateway/deal",
+        "http://localhost:8080/x",
+        "https://127.0.0.1/x",
+        "http://[::1]:5000/x",
+    ],
+)
+def test_the_demo_gateway_and_loopback_addresses_are_accepted(url):
+    assert Settings.from_env({**MINIMAL, "IG_BASE_URL": url}).base_url == url.rstrip("/")
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://api.ig.com/gateway/deal",  # IG's live gateway
+        "https://evil.example.test/gateway/deal",
+        "http://demo-api.ig.com/gateway/deal",  # not over TLS
+        "https://demo-api.ig.com.evil.example.test/x",
+        "https://evil.example.test/@demo-api.ig.com/",
+        "https://user:secret@demo-api.ig.com/x",
+        "https://demo-api.ig.com:8443/x",
+        "https://demo-api.ig.com/x?next=1",
+        "https://demo-api.ig.com/x#frag",
+        "http://127.0.0.1.evil.example.test/x",
+        "http://192.168.0.10/x",
+        "http://127.0.0.1:notaport/x",
+        "ftp://127.0.0.1/x",
+        "demo-api.ig.com/gateway/deal",
+        "//demo-api.ig.com/x",
+    ],
+)
+def test_any_other_address_for_ig_is_refused_because_the_password_is_sent_to_it(url):
+    """The login sends the account's password to this address."""
+    with pytest.raises(ConfigError, match="IG_BASE_URL must be IG's demo gateway"):
+        Settings.from_env({**MINIMAL, "IG_BASE_URL": url})
+
+
+def test_the_refusal_does_not_repeat_the_value():
+    with pytest.raises(ConfigError) as caught:
+        Settings.from_env({**MINIMAL, "IG_BASE_URL": "https://user:hunter2-secret@evil.example.test/x"})
+    assert "hunter2" not in str(caught.value) and "evil.example" not in str(caught.value)
+
+
+@pytest.mark.parametrize("hops", ["0", "1", "5", " 2 "])
+def test_trusted_proxy_hops_accepts_zero_to_five(hops):
+    assert Settings.from_env({**MINIMAL, "TRUSTED_PROXY_HOPS": hops}).trusted_proxy_hops == int(hops)
+
+
+@pytest.mark.parametrize("hops", ["6", "-1", "1.5", "two", "\u0663"])
+def test_trusted_proxy_hops_rejects_anything_else(hops):
+    with pytest.raises(ConfigError, match="TRUSTED_PROXY_HOPS"):
+        Settings.from_env({**MINIMAL, "TRUSTED_PROXY_HOPS": hops})
+
+
+def test_no_proxy_is_trusted_by_default():
+    assert Settings.from_env(MINIMAL).trusted_proxy_hops == 0

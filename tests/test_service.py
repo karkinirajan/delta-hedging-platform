@@ -378,6 +378,42 @@ def test_an_order_with_no_answer_and_no_confirmation_is_unconfirmed_and_says_wha
         service.hedge(confirm=True, expected_direction=plan.direction.value, expected_size=plan.size)
 
 
+@pytest.mark.parametrize(
+    "failure",
+    [
+        httpx.Response(403, json={"errorCode": "error.public-api.exceeded-account-allowance"}),  # a rate limit
+        httpx.Response(500, json={"errorCode": "error.service.unavailable"}),
+        httpx.Response(200, text="not json"),
+    ],
+)
+def test_an_order_whose_confirmation_cannot_be_read_is_unconfirmed_with_the_cooldown_running(
+    env, ig, clock, options_client, cfd_client, failure
+):
+    """The order was sent: an error here used to leave no cooldown and no history entry, inviting a second order."""
+    service = make_service(env, ig, clock, options_client, cfd_client, HEDGING_ENABLED="true", COOLDOWN_SECONDS="60")
+    plan = plan_of(service)
+    ig.fail["confirm"] = failure
+    result = service.hedge(confirm=True, expected_direction=plan.direction.value, expected_size=plan.size)
+    assert len(ig.orders) == 1
+    assert result.executed and result.outcome == "unconfirmed" and result.deal_reference
+    assert "confirmation could not be read" in result.reason and "may have been placed" in result.reason
+    assert result.deal_reference in result.reason
+    (entry,) = service.history()
+    assert entry["outcome"] == "unconfirmed" and entry["deal_reference"] == result.deal_reference
+    with pytest.raises(TooSoon):
+        service.hedge(confirm=True, expected_direction=plan.direction.value, expected_size=plan.size)
+    assert len(ig.orders) == 1
+
+
+def test_a_lost_answer_and_an_unreadable_confirmation_say_which_failed(env, ig, clock, options_client, cfd_client):
+    service = make_service(env, ig, clock, options_client, cfd_client, HEDGING_ENABLED="true", COOLDOWN_SECONDS="60")
+    plan = plan_of(service)
+    ig.drop_order_answer = True
+    ig.fail["confirm"] = httpx.Response(500, json={"errorCode": "error.service.unavailable"})
+    result = service.hedge(confirm=True, expected_direction=plan.direction.value, expected_size=plan.size)
+    assert result.outcome == "unconfirmed" and "did not answer the order" in result.reason
+
+
 def test_a_confirmation_that_appears_on_the_second_look_is_used(live, ig):
     plan = plan_of(live)
     ig.confirm_missing = True

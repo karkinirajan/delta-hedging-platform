@@ -13,6 +13,7 @@ import os
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from urllib.parse import urlsplit
 
 DEMO_BASE_URL = "https://demo-api.ig.com/gateway/deal"
 ACCOUNT_ID = re.compile(r"[A-Za-z0-9\-]{1,30}")  # the pattern IG documents for an account id
@@ -20,10 +21,31 @@ EPIC = re.compile(r"[A-Za-z0-9._]{6,30}")  # ... and for an epic
 CURRENCY = re.compile(r"[A-Z]{3}")
 TRUE = {"1", "true", "yes", "on"}
 FALSE = {"", "0", "false", "no", "off"}
+DEMO_HOST = "demo-api.ig.com"
+LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
 
 
 class ConfigError(Exception):
     """A setting is missing or invalid. The message names the variable, never its value."""
+
+
+def _base_url(value: str) -> str:
+    """IG's demo gateway, or a loopback address (a local fake). The login sends the account's password to this
+    address, so a setting that could point it at another host would be a way to hand the password over."""
+    if not value:
+        return DEMO_BASE_URL
+    parts = urlsplit(value)
+    try:
+        port = parts.port
+    except ValueError:
+        port = -1
+    plain = parts.username is None and parts.password is None and not parts.query and not parts.fragment
+    if plain and port != -1:
+        if parts.scheme == "https" and parts.hostname == DEMO_HOST and port in (None, 443):
+            return value.rstrip("/")
+        if parts.scheme in ("http", "https") and parts.hostname in LOOPBACK_HOSTS:
+            return value.rstrip("/")
+    raise ConfigError(f"IG_BASE_URL must be IG's demo gateway (https://{DEMO_HOST}/...) or a loopback address")
 
 
 def _number(
@@ -67,6 +89,7 @@ class Settings:
     cooldown_seconds: float = 60.0  # at least this long between two orders
     market_data_ttl: float = 5.0
     request_timeout: float = 30.0
+    trusted_proxy_hops: int = 0  # reverse proxies in front of the app whose X-Forwarded-For is believed (0: none)
 
     @classmethod
     def from_env(cls, environ: Mapping[str, str] | None = None, *, web: bool = True) -> Settings:
@@ -114,6 +137,10 @@ class Settings:
         max_size = _number(environ, "MAX_HEDGE_SIZE", 100.0, exclusive=True)
         if not min_size < max_size:
             raise ConfigError("MIN_HEDGE_SIZE must be below MAX_HEDGE_SIZE")
+        hops_text = get("TRUSTED_PROXY_HOPS") or "0"
+        if not hops_text.isascii() or not hops_text.isdigit() or not 0 <= int(hops_text) <= 5:
+            raise ConfigError("TRUSTED_PROXY_HOPS must be a whole number from 0 to 5")
+        hops = int(hops_text)
         tolerance = _number(environ, "PLAN_TOLERANCE", 0.05)
         if tolerance > 1:
             raise ConfigError("PLAN_TOLERANCE is a fraction and must be at most 1")
@@ -125,7 +152,7 @@ class Settings:
             ig_cfd_account=get("IG_CFD_ACCOUNT"),
             underlying_epic=get("IG_UNDERLYING_EPIC"),
             api_token=get("API_TOKEN"),
-            base_url=get("IG_BASE_URL") or DEMO_BASE_URL,
+            base_url=_base_url(get("IG_BASE_URL")),
             hedging_enabled=enabled in TRUE,
             order_currency=currency,
             rate=_number(environ, "RISK_FREE_RATE", 0.05, minimum=-1.0),
@@ -139,4 +166,5 @@ class Settings:
             cooldown_seconds=_number(environ, "COOLDOWN_SECONDS", 60.0),
             market_data_ttl=_number(environ, "MARKET_DATA_TTL", 5.0),
             request_timeout=_number(environ, "REQUEST_TIMEOUT", 30.0, minimum=1.0),
+            trusted_proxy_hops=hops,
         )

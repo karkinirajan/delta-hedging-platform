@@ -6,7 +6,7 @@ import json
 
 import httpx
 
-BASE = "https://ig.example.test/gateway/deal"
+BASE = "https://demo-api.ig.com/gateway/deal"  # intercepted by the fake transport: nothing leaves the machine
 API_KEY, USERNAME, PASSWORD = "demo-api-key-value", "demo-user", "demo-password-value"
 OPTIONS_ACCOUNT, CFD_ACCOUNT = "OPT123", "CFD456"
 UNDERLYING = "IX.D.SPTRD.IFS.IP"

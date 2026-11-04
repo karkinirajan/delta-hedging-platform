@@ -19,7 +19,7 @@ from datetime import UTC, datetime
 
 from .config import Settings
 from .hedging import HedgePlan, HedgeRules, OptionPosition, blocked_plan, plan_hedge, position_delta
-from .ig import IGClient, IGError, new_deal_reference
+from .ig import Confirmation, IGClient, IGError, new_deal_reference
 from .positions import Unreadable, read_option_position, years_to_expiry
 from .pricing import Greeks, greeks, implied_volatility
 
@@ -307,19 +307,29 @@ class HedgingService:
             if not exc.outcome_unknown:
                 raise
             outcome_unknown = True
-        confirmation = self._confirm(reference)
+        # From here on an order may exist at IG, whatever happens next: reading its confirmation can fail (a rate limit,
+        # a timeout), and that must end as "unconfirmed" with the cooldown running and the order in the history, not as
+        # an error that leaves no trace and invites a second order
+        confirm_failed = False
+        try:
+            confirmation = self._confirm(reference)
+        except IGError:
+            confirmation = Confirmation(status="UNKNOWN", reason="", deal_id="")
+            confirm_failed = True
         if confirmation.accepted:
             outcome, reason = "accepted", ""
         elif confirmation.status == "REJECTED":
             outcome, reason = "rejected", confirmation.reason
         else:
             outcome = "unconfirmed"
-            reason = (
-                "IG did not answer the order and has no confirmation: it may have been placed. Check deal reference "
-                f"{reference} on the IG platform before hedging again"
-                if outcome_unknown
-                else "IG has no confirmation for the order yet. Check the deal reference on the IG platform"
-            )
+            if outcome_unknown or confirm_failed:
+                what = "IG did not answer the order" if outcome_unknown else "IG's confirmation could not be read"
+                reason = (
+                    f"{what} and has no confirmation: it may have been placed. Check deal reference "
+                    f"{reference} on the IG platform before hedging again"
+                )
+            else:
+                reason = "IG has no confirmation for the order yet. Check the deal reference on the IG platform"
         if outcome != "rejected":
             self._state.last_order_at = self._monotonic()  # a rejected order may be tried again at once
         self._state.analysis = None
