@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Delta hedging dashboard</title>
+    <link rel="icon" href="data:," />
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}" />
+  </head>
+  <body>
+    <header class="top"><h1>Delta hedging dashboard</h1><p class="muted">IG demo account. Nothing is sent to IG unless hedging is switched on and you confirm an order.</p></header>
+    <main id="app" data-analysis-url="/api/analysis" data-hedge-url="/api/hedge" data-history-url="/api/hedge/history">
+      <form id="tokenForm" class="card row" autocomplete="off">
+        <label for="token">API token</label>
+        <input id="token" type="password" autocomplete="off" required />
+        <button class="button" type="submit">Load</button>
+        <span class="muted">The token stays in this page's memory; reloading the page forgets it.</span>
+      </form>
+      <p id="message" class="notice" role="alert" hidden></p>
+
+      <section id="results" hidden>
+        <section class="card">
+          <h2>Portfolio</h2>
+          <dl id="summary" class="summary"></dl>
+        </section>
+
+        <section class="card">
+          <h2>Hedge</h2>
+          <p id="planText"></p>
+          <div id="placeBox" hidden>
+            <label class="check"><input id="confirmBox" type="checkbox" /> <span id="confirmLabel"></span></label>
+            <button id="placeButton" class="button danger" type="button" disabled>Place this hedge</button>
+          </div>
+          <p id="disabledNote" class="muted" hidden>Hedging is switched off (HEDGING_ENABLED), so this is a dry run: the plan is shown and nothing can be placed.</p>
+          <ul id="warnings" class="list"></ul>
+        </section>
+
+        <section class="card wide">
+          <h2>Option positions</h2>
+          <div class="table-wrap"><table id="positions"><thead></thead><tbody></tbody></table></div>
+          <div id="unreadable"></div>
+        </section>
+
+        <section class="card wide">
+          <h2>Hedge positions held in the underlying</h2>
+          <div class="table-wrap"><table id="held"><thead></thead><tbody></tbody></table></div>
+        </section>
+
+        <section class="card wide">
+          <h2>Orders placed since the server started</h2>
+          <div class="table-wrap"><table id="history"><thead></thead><tbody></tbody></table></div>
+        </section>
+
+        <section class="card"><h2>Settings</h2><dl id="settings" class="summary"></dl></section>
+      </section>
+    </main>
+    <script src="{{ url_for('static', filename='dashboard.js') }}" defer></script>
+  </body>
+</html>

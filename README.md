@@ -1,163 +1,175 @@
-# Delta Hedging Automation Platform
+# Delta hedging on the IG demo API
 
-## Overview
+Reads the option positions of an [IG](https://www.ig.com/) **demo** account, prices each with Black-Scholes (greeks, and
+the implied volatility found from the option's own market price), adds the deltas up across the whole portfolio and
+works out the trade in the underlying that makes it delta neutral. A dashboard and a small JSON API show the result.
+An order is placed only when hedging is switched on **and** a request confirms the exact order that was previewed.
 
-The Delta Hedging Automation Platform is a sophisticated financial tool designed to manage and hedge option positions dynamically using the Black-Scholes option pricing model. This project provides an end-to-end solution for creating, monitoring, and hedging financial derivatives with intelligent risk management.
+Only IG's demo environment is supported: the code refuses to start with anything else.
 
-![Project Architecture](https://img.shields.io/badge/Architecture-Flask%20%7C%20JavaScript%20%7C%20Axios-blue)
-![Python Version](https://img.shields.io/badge/Python-3.8%2B-green)
-![License](https://img.shields.io/badge/License-MIT-yellow)
+## Contents
 
-## 🚀 Key Features
+1. [Features](#features)
+2. [Quickstart](#quickstart)
+3. [Configuration](#configuration)
+4. [The API](#the-api)
+5. [How a hedge is decided](#how-a-hedge-is-decided)
+6. [Project structure](#project-structure)
+7. [Testing](#testing)
+8. [Docker](#docker)
+9. [Versions](#versions)
+10. [License](#license)
 
-- **Automated Option Position Management**
-- **Dynamic Delta Hedging**
-- **Real-time Market Data Simulation**
-- **Comprehensive Risk Analytics**
-- **Flexible Hedging Strategies**
+The documentation is a short book, in reading order:
+[1 The hedge](docs/01-how-the-hedge-is-worked-out.md) ·
+[2 IG and the two accounts](docs/02-ig-and-the-two-accounts.md) ·
+[3 API reference](docs/03-api-reference.md) ·
+[4 Safety model](docs/04-safety-model.md).
 
-## 📦 Prerequisites
+## Features
 
-- Python 3.8+
-- pip (Python Package Manager)
-- Virtual Environment (recommended)
+* **Greeks** (price, delta, gamma, vega, theta, rho) from the standard library alone, checked against textbook values.
+  No input is clamped: a volatility or a time outside the valid range is an error, not a silently different number.
+* **Implied volatility** from each position's market price, by bisection (it always converges inside the interval, or
+  says the price is not attainable). When none can be found the configured default is used and **labelled as such**.
+* **A portfolio hedge, not one per position**: long and short positions, calls and puts are netted, and hedges already
+  held in the underlying are counted. A positive net delta means SELL, a negative one BUY.
+* **Fails closed.** A position whose strike, type or expiry cannot be read, or a market that is not tradeable, blocks
+  the plan; nothing is guessed from defaults.
+* **Dry run by default** (`HEDGING_ENABLED=false`). With it on, an order needs `confirm: true` *and* the direction and
+  size that were previewed; if the book moved in between, the answer is a 409 with the new plan.
+* **The order is checked.** IG answers an order with a reference only; the confirmation is read, and ACCEPTED or
+  REJECTED is what is reported and recorded.
+* A cooldown between orders, a throttle on failed token checks, no CORS, a strict Content-Security-Policy, tokens and
+  passwords never in logs, URLs, pages or error messages.
+* One IG session per account (options, CFD): no request ever runs on the wrong account.
 
-## 🔧 Installation
+What it does **not** do: it does not hedge by itself. There is no background loop; a hedge happens only when a request
+confirms one (the first version's "start monitoring" endpoint called a method that did not exist).
 
-1.Clone the repository:
+## Quickstart
 
-```bash
-git clone https://github.com/yourusername/delta-hedging-platform.git
-cd delta-hedging-platform
-```
-
-2.Create a virtual environment:
-
-```bash
-python -m venv venv
-source venv/bin/activate  # On Windows, use `venv\Scripts\activate`
-```
-
-3.Install dependencies:
-
-```bash
-pip install -r requirements.txt
-```
-
-4.Set up environment variables (optional):
-
-```bash
-# Create a .env file in the project root
-IG_API_KEY=your_ig_api_key
-IG_USERNAME=your_username
-IG_PASSWORD=your_password
-IG_ACC_TYPE=DEMO/LIVE
-```
-
-## 🎬 Running the Application
-
-### Backend (Flask Server)
+You need [uv](https://docs.astral.sh/uv/) and an IG **demo** account with an API key
+(see [IG's labs site](https://labs.ig.com/)).
 
 ```bash
-# Run the Flask development server
-python app.py
+uv sync
+cp .env.example .env        # fill in your demo account; never commit it
+uv run delta-hedging run    # http://127.0.0.1:8000
 ```
 
-### Frontend (Web Dashboard)
+Open the page, paste the `API_TOKEN` from your `.env`, press Load. With `HEDGING_ENABLED=false` nothing but reads is
+ever sent to IG.
 
-Open the `index.html` file in a modern web browser.
+The same from the command line:
 
-## 🧰 Technologies Used
+```bash
+curl -s -H "Authorization: Bearer $API_TOKEN" http://127.0.0.1:8000/api/analysis | jq .analysis.plan
+curl -s -H "Authorization: Bearer $API_TOKEN" -X POST http://127.0.0.1:8000/api/hedge          # a preview
+```
 
-- **Backend**:
+The calculator needs no IG access at all:
 
-  - Flask
-  - NumPy
-  - SciPy
-  - Requests
+```bash
+uv run delta-hedging greeks --type call --spot 100 --strike 100 --years 1 --volatility 0.2 --rate 0.05
+```
 
-- **Frontend**:
-  - Vanilla JavaScript
-  - Axios
-  - Tailwind CSS
+The development server (`run`) listens on `127.0.0.1` only and never in debug mode. For anything else use gunicorn (see
+[Docker](#docker)) behind a TLS proxy; the API token travels in a header.
 
-- **Financial Modeling**:
-  - Black-Scholes Option Pricing Model
-  - Delta Hedging Algorithm
+## Configuration
 
-## 🔬 How It Works
+All values come from the environment (a `.env` in the working directory is read). Missing or invalid values stop the
+start with a message naming the variable. [`.env.example`](.env.example) lists every variable.
 
-### Option Position Management
+| Variable | Default | Meaning |
+|---|---|---|
+| `IG_API_KEY`, `IG_USERNAME`, `IG_PASSWORD` | required | the demo account's credentials |
+| `IG_OPTIONS_ACCOUNT`, `IG_CFD_ACCOUNT` | required | where the options are read, and where hedges are placed |
+| `IG_UNDERLYING_EPIC` | required | the instrument the hedges are placed in |
+| `API_TOKEN` | required | bearer token for `/api`, at least 24 characters |
+| `HEDGING_ENABLED` | `false` | `true` lets a confirmed request place an order |
+| `ORDER_CURRENCY` | `GBP` | currency code of the orders |
+| `DELTA_THRESHOLD` | `0.05` | net delta (units of the underlying) left alone |
+| `MIN_HEDGE_SIZE`, `MAX_HEDGE_SIZE` | `0.01`, `100` | smallest and largest order; a larger need is hedged in steps |
+| `PLAN_TOLERANCE` | `0.05` | how far the size may move between preview and order (fraction) |
+| `COOLDOWN_SECONDS` | `60` | minimum time between two orders |
+| `RISK_FREE_RATE` | `0.05` | the model's rate |
+| `DEFAULT_VOLATILITY`, `MIN_VOLATILITY`, `MAX_VOLATILITY` | `0.2`, `0.001`, `2.0` | used, and labelled, when no implied volatility is found |
+| `MARKET_DATA_TTL`, `REQUEST_TIMEOUT` | `5`, `30` | seconds an answer of IG is kept; timeout of a request to IG |
+| `IG_ENVIRONMENT` | `demo` | only `demo` is accepted |
+| `IG_BASE_URL` | IG's demo gateway | for local fakes and tests |
 
-1. Create option positions with strike price, type, and expiration
-2. Track real-time market data
-3. Calculate option delta
-4. Automatically hedge positions based on predefined risk thresholds
+## The API
 
-### Delta Hedging Strategy
+Every `/api` route needs `Authorization: Bearer <API_TOKEN>`. The page `/` and `/healthz` are public and carry no data.
 
-- Calculates option sensitivity (delta)
-- Dynamically adjusts hedge positions
-- Manages risk by keeping portfolio delta-neutral
+| Route | Does |
+|---|---|
+| `GET /api/analysis` | positions with their greeks, the portfolio delta, the plan and the settings; `?fresh=1` skips the short cache |
+| `POST /api/hedge` | a preview; with `{"confirm": true, "expected_direction": "SELL", "expected_size": 6.63}` the order |
+| `GET /api/hedge/history` | orders placed since the server started |
 
-## 📊 Key Components
+Errors are JSON `{"error": ...}`: 401 (token), 403 (hedging is off), 409 (the plan changed, or another hedge is being placed), 422 (IG refused the
+order), 429 (throttled, cooling down or IG's allowance used up; `Retry-After` is set), 502 (IG failed), 500
+(nothing internal is shown). Full reference: [docs/03-api-reference.md](docs/03-api-reference.md).
 
-- **IGClient**: Simulated market data and trading interface
-- **OptionCalculator**: Black-Scholes option pricing and delta calculation
-- **DeltaHedger**: Core hedging logic and position management
-- **MockMarketData**: Realistic price simulation
+## How a hedge is decided
 
-## 🔍 Example Usage
+1. Each option position gets a delta from Black-Scholes: spot from the underlying's bid and offer, strike and type from
+   the instrument's name, time to expiry from its expiry date, volatility implied by its market price.
+2. A long position counts with the option's delta, a short one with the opposite; times size and contract size.
+3. The positions are added up, and the held hedges (long +, short −) are added to that: the **net delta**.
+4. If its size is within `DELTA_THRESHOLD` nothing is done. Otherwise the order is the opposite of the net delta, at
+   least `MIN_HEDGE_SIZE`, at most `MAX_HEDGE_SIZE`.
 
+Worked through with numbers in [docs/01](docs/01-how-the-hedge-is-worked-out.md).
 
-## Create a new option position
-position_data = {
-    "epic": "CS.D.EURUSD.TODAY.IP",
-    "strike": 1.2000,
-    "option_type": "CALL",
-    "premium": 50,
-    "contracts": 1,
-    "time_to_expiry": 0.25
-}
-position_id = hedger.create_position(position_data)
-``
-## Deployment to aws ec2
+## Project structure
 
-1. Create an EC2 instance
-2. Connect to the instance using SSH
-3. Install Git and clone the repository
-4. Install Python and the required packages
-5. Run the Flask server
-6. Access the application using the public IP address
+```
+src/delta_hedging/
+  pricing.py     Black-Scholes price, greeks, implied volatility (pure)
+  hedging.py     the hedge plan from net delta and rules (pure)
+  positions.py   IG position data -> option positions, or "unreadable" (pure)
+  ig.py          the IG REST client, one per account
+  service.py     analysis, plan, guarded order, cooldown, history
+  config.py      settings from the environment, validated
+  api.py         routes, bearer-token check, failed-attempt throttle
+  app.py         the Flask factory, headers, error handlers
+  cli.py         `run` and `greeks`
+  templates/ static/   the dashboard (no inline code, nothing from other sites)
+tests/           one module per source module, plus security and hygiene tests
+docs/            the four-chapter book
+```
 
-`
+## Testing
 
+```bash
+uv run pytest -q -W error --cov       # warnings are errors
+uv run ruff check . && uv run ruff format --check .
+```
 
-## 🛡️ Error Handling
+Tests run against a fake IG; no network and no credentials are needed. Besides the usual tests there is a hygiene
+module that fails if a credential, a database, an IP address or a debug server is committed, and the pricing is
+checked against published values. The suite was also tested by **mutation**: 47 defects (among them the first
+version's "every hedge is a BUY") were put back one at a time and the suite failed for each.
 
-- Comprehensive logging
-- Graceful error management
-- Fallback to mock data during API failures
+## Docker
 
-## 🔜 Roadmap
+```bash
+docker build -t delta-hedging .
+docker run --rm -p 8000:8000 --env-file .env delta-hedging
+```
 
-- [ ] Support for multiple option types
-- [ ] Advanced risk metrics
-- [ ] Machine learning-based prediction
-- [ ] Real broker API integration
+The image runs gunicorn as an unprivileged user with **one worker** (several threads): the cooldown and the list of
+orders live in the process, so a second worker would have its own. Nothing is baked in; the settings come from the
+environment.
 
-## 🤝 Contributing
+## Versions
 
-1. Fork the repository
-2. Create your feature branch (`git checkout -b feature/AmazingFeature`)
-3. Commit your changes (`git commit -m 'Add some AmazingFeature'`)
-4. Push to the branch (`git push origin feature/AmazingFeature`)
-5. Open a Pull Request
+Python 3.13, pinned with `uv.lock`. See [VERSIONS.md](VERSIONS.md).
 
-## ⚖️ License
+## License
 
-Distributed under the MIT License. See `LICENSE` for more information.
-
----
-
-**Disclaimer**: This is a simulation tool. Always consult financial professionals before making investment decisions.
+MIT, see [LICENSE](LICENSE).
